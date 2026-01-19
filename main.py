@@ -10,6 +10,7 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from dotenv import load_dotenv
+from groq import Groq
 
 load_dotenv()
 
@@ -18,7 +19,7 @@ app = FastAPI(title="Amica AI Engine")
 SECRET_KEY = os.getenv("AMICA_API_KEY")
 GROQ_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEYS", "").split(",") if k.strip()]
 
-RELEVANCE_THRESHOLD = 0.8
+RELEVANCE_THRESHOLD = 0.85
 MAX_CTX = 8192
 MAX_GEN = 1024
 
@@ -30,9 +31,9 @@ class GroqRotator:
     def __init__(self, keys):
         self.keys = keys
         self.current_idx = 0
-    def get_key(self):
+    def get_client(self):
         if not self.keys: return None
-        return self.keys[self.current_idx]
+        return Groq(api_key=self.keys[self.current_idx])
     def rotate(self):
         self.current_idx = (self.current_idx + 1) % len(self.keys)
 
@@ -113,6 +114,7 @@ async def chat_stream(request: Request, x_amica_key: str = Header(None, alias="X
             scored_docs = vector_db.similarity_search_with_score(message, k=3)
             seen_urls = set()
             for doc, score in scored_docs:
+                print(f"[DEBUG] RAG Score: {score} (Threshold: {RELEVANCE_THRESHOLD})")
                 if score < RELEVANCE_THRESHOLD:
                     rag_content += doc.page_content + "\n\n"
                     url = doc.metadata.get("source_url")
@@ -163,14 +165,39 @@ CONTOH JAWABAN YANG BENAR:
 async def audit_grade(request: Request, x_amica_key: str = Header(None, alias="X-Amica-Key")):
     if SECRET_KEY and x_amica_key != SECRET_KEY: raise HTTPException(status_code=401)
     data = await request.json()
+    
+    system_prompt = """
+    You are an AI Judge. Evaluate the AI Answer based on the Expected Answer.
+    Respond ONLY in JSON format with keys: 
+    - "score" (integer 0-100)
+    - "reason" (short string explanation)
+    """
+    
+    user_content = f"""
+    Question: {data.get('question')}
+    Expected Answer: {data.get('expected')}
+    AI Answer: {data.get('actual')}
+    """
+
     for _ in range(len(GROQ_KEYS)):
-        k = groq_manager.get_key()
+        client = groq_manager.get_client()
         try:
-            res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {k}"}, json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": f"Grade accuracy: {data}"}], "response_format": {"type": "json_object"}}, timeout=15)
-            if res.status_code == 200: return res.json()
-            elif res.status_code == 429: groq_manager.rotate()
-        except: groq_manager.rotate()
-    raise HTTPException(status_code=503)
+            chat_completion = client.chat.completions.create( # type: ignore
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                model="llama-3.3-70b-versatile",
+                temperature=0.1,
+                response_format={"type": "json_object"},
+                timeout=30
+            )
+            return json.loads(chat_completion.choices[0].message.content) # type: ignore
+        except Exception as e:
+            print(f"[GROQ ERROR] {e}")
+            groq_manager.rotate()
+            
+    raise HTTPException(status_code=503, detail="All Groq keys failed")
 
 if __name__ == "__main__":
     import uvicorn

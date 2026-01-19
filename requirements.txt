@@ -17,3 +17,4 @@ typing_extensions==4.15.0
 pydantic==2.12.5
 pydantic_core==2.41.5
 chromadb==1.4.0
+groq==1.0.0
