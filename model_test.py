@@ -5,7 +5,7 @@ print("Test Start...")
 llm = Llama(
     model_path="./models/gemma-3-1b-it-q4_km.gguf",
     n_ctx=2048,
-    n_threads=4, 
+    n_threads=2, 
     verbose=False
 )
 

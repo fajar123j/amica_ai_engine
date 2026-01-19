@@ -19,7 +19,7 @@ app = FastAPI(title="Amica AI Engine")
 SECRET_KEY = os.getenv("AMICA_API_KEY")
 GROQ_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEYS", "").split(",") if k.strip()]
 
-RELEVANCE_THRESHOLD = 0.85
+RELEVANCE_THRESHOLD = 0.80
 MAX_CTX = 8192
 MAX_GEN = 1024
 
@@ -80,41 +80,41 @@ async def search_only(request: Request, x_amica_key: str = Header(None, alias="X
     if SECRET_KEY and x_amica_key != SECRET_KEY: raise HTTPException(status_code=401)
     data = await request.json()
     query = data.get("query", "")
-    docs = vector_db.similarity_search_with_score(query, k=5)
+    docs = vector_db.similarity_search_with_score(query, k=10)
     results = []
+    seen_ids = set()
     for doc, score in docs:
-        results.append({
-            "article_id": doc.metadata.get("id"),
-            "title": doc.metadata.get("title"),
-            "score": score
-        })
+        aid = str(doc.metadata.get("id"))
+        if aid not in seen_ids:
+            results.append({
+                "article_id": aid,
+                "title": doc.metadata.get("title"),
+                "score": score
+            })
+            seen_ids.add(aid)
+        if len(results) >= 5:
+            break
     return {"results": results}
 
 @app.post("/v1/chat/stream")
 async def chat_stream(request: Request, x_amica_key: str = Header(None, alias="X-Amica-Key")):
     if SECRET_KEY and x_amica_key != SECRET_KEY: raise HTTPException(status_code=401)
-    
     try:
         data = await request.json()
     except:
         raise HTTPException(status_code=400, detail="Invalid JSON")
-        
     message = data.get("message", "")
-    
     async def event_generator():
         if await request.is_disconnected():
             return
-
         greetings = ["hai", "halo", "hi", "pagi", "siang", "sore", "malam", "amica"]
         is_greeting = any(k in message.lower() for k in greetings) and len(message.split()) < 2
         rag_content, source_links = "", []
-        
         if not is_greeting:
             log_debug("RAG", f"Searching: {message}")
             scored_docs = vector_db.similarity_search_with_score(message, k=3)
             seen_urls = set()
             for doc, score in scored_docs:
-                print(f"[DEBUG] RAG Score: {score} (Threshold: {RELEVANCE_THRESHOLD})")
                 if score < RELEVANCE_THRESHOLD:
                     rag_content += doc.page_content + "\n\n"
                     url = doc.metadata.get("source_url")
@@ -122,63 +122,49 @@ async def chat_stream(request: Request, x_amica_key: str = Header(None, alias="X
                     if url and url not in seen_urls:
                         source_links.append(f"[{title}]({url})")
                         seen_urls.add(url)
-
         sys_p = f"""<start_of_turn>system
 Kamu adalah Amica, Asisten Edukasi Anti-Bullying. Saat ditanya siapa dirimu, jawab bahwa kamu adalah Amica asisten edukasi anti bullying bertujuan untuk memberikan edukasi anti bullying kepada Ayah/Bunda.
 Tugasmu adalah memberikan dukungan dan informasi kepada orang tua (Ayah/Bunda) tentang bullying.
-
-INSTRUKSI KHUSUS (WAJIB PATUH):
+INSTRUKSI KHUSUS:
 1. JAWAB DENGAN SINGKAT.
-2. Berikan penjelasan bahwa kamu adalah Amica asisten edukasi anti bullying bertujuan untuk memberikan edukasi anti bullying kepada Ayah/Bunda.
-3. DILARANG MENULIS LINK/URL DALAM TEKS JAWABAN. Hapus semua https:// atau www.
-4. Gunakan Bahasa Indonesia yang ramah dan hangat.
-5. Jika ada REFERENSI di bawah, gunakan faktanya. Jika tidak, gunakan pengetahuan umum tentang anti-bullying.
-6. Akhiri dengan disclaimer bahwa anda adalah AI dan bukan pengganti professional."
-
-CONTOH JAWABAN YANG BENAR:
-"Halo Bunda, tanda bullying bisa berupa perubahan sikap mendadak atau enggan ke sekolah. Coba ajak bicara pelan-pelan saat santai. Tetap dampingi buah hati ya, Ayah/Bunda."
+2. Berikan penjelasan bahwa kamu adalah Amica asisten edukasi anti bullying.
+3. DILARANG MENULIS LINK/URL DALAM TEKS JAWABAN.
+4. Gunakan Bahasa Indonesia yang ramah.
+5. Jika ada REFERENSI, gunakan faktanya.
+6. Akhiri dengan disclaimer bahwa anda adalah AI dan bukan pengganti professional.
 """
-
         if rag_content:
             sys_p += f"\n\nDATA REFERENSI:\n{rag_content}"
-        
         sys_p += "<end_of_turn>"
         final_prompt = f"{sys_p}\n<start_of_turn>user\n{message}. system : 'Jangan memberikan jawaban yang sangat panjang kalau gak diminta'<end_of_turn>\n<start_of_turn>model\n"
-        
         stream = llm(final_prompt, max_tokens=MAX_GEN, stream=True, stop=["<end_of_turn>"], temperature=0.2)
-        
         for chunk in stream:
             if await request.is_disconnected():
                 break 
-                
             token = chunk["choices"][0]["text"] # type: ignore
             yield token
-            
             await asyncio.sleep(0.01)
-            
         if source_links and not await request.is_disconnected():
             yield "\n\n📚 **Bacaan terkait:** " + ", ".join(source_links)
-            
     return StreamingResponse(event_generator(), media_type="text/plain")
 
 @app.post("/v1/audit/grade")
 async def audit_grade(request: Request, x_amica_key: str = Header(None, alias="X-Amica-Key")):
     if SECRET_KEY and x_amica_key != SECRET_KEY: raise HTTPException(status_code=401)
     data = await request.json()
-    
     system_prompt = """
-    You are an AI Judge. Evaluate the AI Answer based on the Expected Answer.
-    Respond ONLY in JSON format with keys: 
-    - "score" (integer 0-100)
-    - "reason" (short string explanation)
+    You are a Professional AI Judge. Evaluate the AI Answer based on the Expected Answer (Ground Truth).
+    RULES:
+    1. The Expected Answer is the CORE FACT. If AI Answer contains this fact, it is CORRECT.
+    2. DO NOT penalize the AI for providing more details or being more verbose, as long as the information is accurate.
+    3. Penalize ONLY if: The core fact is missing, the information is contradictory, or it provides dangerous hallucinations.
+    Respond ONLY in JSON format: {"score": integer 0-100, "reason": "short explanation"}
     """
-    
     user_content = f"""
     Question: {data.get('question')}
     Expected Answer: {data.get('expected')}
     AI Answer: {data.get('actual')}
     """
-
     for _ in range(len(GROQ_KEYS)):
         client = groq_manager.get_client()
         try:
@@ -196,7 +182,6 @@ async def audit_grade(request: Request, x_amica_key: str = Header(None, alias="X
         except Exception as e:
             print(f"[GROQ ERROR] {e}")
             groq_manager.rotate()
-            
     raise HTTPException(status_code=503, detail="All Groq keys failed")
 
 if __name__ == "__main__":
