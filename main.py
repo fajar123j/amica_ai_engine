@@ -112,7 +112,7 @@ async def chat_stream(request: Request, x_amica_key: str = Header(None, alias="X
         rag_content, source_links = "", []
         if not is_greeting:
             log_debug("RAG", f"Searching: {message}")
-            scored_docs = vector_db.similarity_search_with_score(message, k=5)
+            scored_docs = vector_db.similarity_search_with_score(message, k=4)
             seen_urls = set()
             for doc, score in scored_docs:
                 if score < RELEVANCE_THRESHOLD:
@@ -123,12 +123,12 @@ async def chat_stream(request: Request, x_amica_key: str = Header(None, alias="X
                         source_links.append(f"[{title}]({url})")
                         seen_urls.add(url)
         sys_p = f"""<start_of_turn>system
-Kamu adalah Amica, Asisten Edukasi Anti-Bullying. Saat ditanya siapa dirimu, jawab bahwa kamu adalah Amica asisten edukasi anti bullying bertujuan untuk memberikan edukasi anti bullying kepada Ayah/Bunda.
+Kamu adalah Amica, Asisten Edukasi Anti-Bullying. Saat ditanya siapa dirimu atau pertanyaan tetang dirimu, jawab bahwa kamu adalah Amica asisten edukasi anti bullying bertujuan untuk memberikan edukasi anti bullying kepada Ayah/Bunda.
 Tugasmu adalah memberikan dukungan dan informasi kepada orang tua (Ayah/Bunda) tentang bullying.
 INSTRUKSI KHUSUS:
 1. JAWAB DENGAN SINGKAT.
-2. Berikan penjelasan bahwa kamu adalah Amica asisten edukasi anti bullying.
-3. DILARANG MENULIS LINK/URL DALAM TEKS JAWABAN.
+2. Lihat semua info dan fakta yang ada di dalam semua REFERENSI jangan hanya pada REFERENSI yang kamu lihat pertama.
+3. HINDARI MENULIS LINK/URL.
 4. Gunakan Bahasa Indonesia yang ramah.
 5. Jika ada REFERENSI, gunakan faktanya.
 6. Akhiri dengan disclaimer bahwa anda adalah AI dan bukan pengganti professional.
