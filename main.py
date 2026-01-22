@@ -112,7 +112,7 @@ async def chat_stream(request: Request, x_amica_key: str = Header(None, alias="X
         rag_content, source_links = "", []
         if not is_greeting:
             log_debug("RAG", f"Searching: {message}")
-            scored_docs = vector_db.similarity_search_with_score(message, k=3)
+            scored_docs = vector_db.similarity_search_with_score(message, k=5)
             seen_urls = set()
             for doc, score in scored_docs:
                 if score < RELEVANCE_THRESHOLD:
